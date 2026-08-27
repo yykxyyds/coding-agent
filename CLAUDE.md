@@ -26,6 +26,10 @@ python -u agent.py --workdir .                       # 交互式对话，exit �
 # 一键真实演示（自动读 key、重置 demo bug、跑 agent）
 run_demo.bat      # Windows 双击
 bash run_demo.sh  # Git Bash
+
+# 一键联网调研报告演示
+run_report_demo.bat
+bash run_report_demo.sh
 ```
 
 ## 架构
@@ -37,6 +41,7 @@ bash run_demo.sh  # Git Bash
   - `_trim_history`：上下文管理，超长时删最早一整轮（assistant 带 tool_calls + 其 tool 结果），保证不产生孤立的 tool 消息
   - `run_agent`：loop 主循环。协议要求先把 assistant 消息（含 tool_calls）放入历史，再 append 各 tool 结果；无 tool_calls 即终止；`max_steps` 强制停止
   - `main`：CLI（`--task` 一次性 / 无则交互；`--mock`；`--workdir`；`--max-steps`）
+- `web_fetch.py` / `html_to_pdf.py`：辅助命令（联网搜索/抓网页净化正文、HTML→PDF 调 Edge headless），供 agent 通过 run_bash 组合调用，不新增工具
 
 ## 关键设计点（面试答辩素材）
 
@@ -49,3 +54,4 @@ bash run_demo.sh  # Git Bash
 - `demo_bugs/`：修 bug（单词统计程序 counter.py，`run_demo.bat` 每次运行前会把它重置回 bug 版）
 - `demo_excel/`：Excel 平均分（class_scores.xlsx，agent 用 pandas 读取计算）
 - `demo_todo/`：从零写待办工具 + 测试（todo.py / test_todo.py，agent 自主生成）
+- `demo_report/`：联网调研报告（agent 自主搜索+抓官方文档→提炼表格→生成 PDF；零第三方依赖）
