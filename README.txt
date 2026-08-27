@@ -30,4 +30,4 @@ agent 会自主完成：查看目录 → 读代码 → 运行定位问题 → �
 
 ## 备注
 - API key 仅经环境变量提供，不写入仓库。
-- Git 仓库地址：<待填写>
+- Git 仓库地址：https://github.com/yykxyyds/coding-agent
