@@ -24,6 +24,7 @@
 - demo_excel：Excel 平均分
 - demo_todo：从零写待办工具 + 测试
 - demo_report：联网调研报告（搜索 + 抓文档 → 表格 → PDF）
+- demo_analysis：Excel 数据分析（240 行成绩：读数据 → 算指标 → 分组对比 → 中文报告）
 
 ## 备注
 - API key 仅经环境变量提供，不写入仓库。
