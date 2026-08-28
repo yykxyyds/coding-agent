@@ -1,139 +1,158 @@
 # -*- coding: utf-8 -*-
+"""
+学生成绩数据分析脚本
+分析 demo_analysis/class_scores.xlsx 并生成中文报告
+"""
 import pandas as pd
 
-SRC = 'demo_analysis/class_scores.xlsx'
-OUT = 'demo_analysis/analysis_report.txt'
+# 设置显示不被截断
+pd.set_option("display.max_columns", 20)
+pd.set_option("display.width", 200)
 
-subjects = ['语文', '数学', '英语']
+SRC = "demo_analysis/class_scores.xlsx"
+OUT = "demo_analysis/analysis_report.txt"
 
 df = pd.read_excel(SRC)
+subjects = ["语文", "数学", "英语"]
+
+# 计算总分
+df["总分"] = df[subjects].sum(axis=1)
 
 lines = []
-def w(s=''):
-    lines.append(str(s))
+def w(s=""):
+    lines.append(s)
+
+w("=" * 60)
+w("《学生成绩分析报告》")
+w("数据源：demo_analysis/class_scores.xlsx")
+w("=" * 60)
 
 # ---------- 1. 数据概览 ----------
-w('=' * 60)
-w('一、数据概览')
-w('=' * 60)
-w(f'数据总条数（学生人数）：{len(df)}')
-w(f'字段：{"、".join(df.columns.tolist())}')
-w(f'班级分布：{"、".join(df["班级"].unique())}')
-w(f'性别：{"、".join(df["性别"].unique())}')
-w('缺失值统计：')
-for col in df.columns:
-    w(f'  {col}：缺失 {df[col].isnull().sum()} 条')
-w('')
-w('各科目数据概况（最小值 / 最大值 / 均值）：')
-for s in subjects:
-    w(f'  {s}：最低 {df[s].min()}，最高 {df[s].max()}，平均 {df[s].mean():.2f}')
-w('')
-w('班级人数：')
-class_counts = df.groupby('班级').size()
-for c, n in class_counts.items():
-    w(f'  {c}：{n} 人')
-w('')
-w('性别人数：')
-for g, n in df.groupby('性别').size().items():
-    w(f'  {g}：{n} 人')
-w('')
+w()
+w("一、数据概览")
+w("-" * 40)
+w(f"数据行数（学生人数）：{len(df)}")
+w(f"数据列数：{df.shape[1]}")
+w(f"包含字段：{', '.join(df.columns.tolist())}")
+w(f"班级数：{df['班级'].nunique()}（{'、'.join(sorted(df['班级'].unique()))}）")
+gender_counts = df['性别'].value_counts().to_dict()
+w(f"性别分布：男生 {gender_counts.get('男',0)} 人，女生 {gender_counts.get('女',0)} 人")
+w(f"空值数量：{int(df.isnull().sum().sum())}")
+w("数值列基本统计：")
+w(df[subjects].describe().round(2).to_string())
 
-# ---------- 2. 单科统计 ----------
-w('=' * 60)
-w('二、各科平均分 / 最高分 / 最低分 / 及格率 / 优秀率')
-w('=' * 60)
-pass_rate = lambda x: (x >= 60).mean() * 100
-excell_rate = lambda x: (x >= 90).mean() * 100
+# ---------- 2. 各科统计指标 ----------
+w()
+w("二、各科统计指标（平均分 / 最高分 / 最低分 / 及格率 / 优秀率）")
+w("-" * 40)
+w("说明：及格按 ≥60 计，优秀按 ≥90 计。")
 
-for s in subjects:
-    avg = df[s].mean()
-    hi = df[s].max()
-    lo = df[s].min()
-    pr = pass_rate(df[s])
-    er = excell_rate(df[s])
-    w(f'【{s}】')
-    w(f'  平均分：{avg:.2f}')
-    w(f'  最高分：{hi}')
-    w(f'  最低分：{lo}')
-    w(f'  及格率（≥60）：{pr:.1f}%')
-    w(f'  优秀率（≥90）：{er:.1f}%')
-    w('')
 
-# ---------- 3. 总分排序 ----------
-w('=' * 60)
-w('三、总分排名')
-w('=' * 60)
-df['总分'] = df[subjects].sum(axis=1)
-df['平均分'] = df[subjects].mean(axis=1)
+def line_stats(s):
+    avg = s.mean()
+    mx = s.max()
+    mn = s.min()
+    pass_rate = (s >= 60).mean() * 100
+    good_rate = (s >= 90).mean() * 100
+    return avg, mx, mn, pass_rate, good_rate
 
-total_top10 = df.nlargest(10, '总分')
-w('总分排名前10：')
-for i, (_, row) in enumerate(total_top10.iterrows(), 1):
-    w(f'  第{i}名：{row["学号"]} {row["姓名"]}（{row["班级"]}，{row["性别"]}）总分 {row["总分"]:.1f} 平均 {row["平均分"]:.1f}')
-w('')
 
-w('各单科前5：')
-for s in subjects:
-    top5 = df.nlargest(5, s)
-    w(f'【{s}】前5：')
-    for i, (_, row) in enumerate(top5.iterrows(), 1):
-        w(f'  第{i}名：{row["学号"]} {row["姓名"]}（{row["班级"]}，{row["性别"]}）{s} {row[s]}')
-    w('')
+w(f"{'科目':<6}{'平均分':>8}{'最高分':>8}{'最低分':>8}{'及格率':>10}{'优秀率':>10}")
+for sub in subjects:
+    avg, mx, mn, pr, gr = line_stats(df[sub])
+    w(f"{sub:<6}{avg:>8.2f}{mx:>8.1f}{mn:>8.1f}{pr:>9.2f}%{gr:>9.2f}%")
+
+# ---------- 3. 排行榜 ----------
+w()
+w("三、排行榜")
+w("-" * 40)
+w("（一）总分前 10 名：")
+w(f"{'排名':<6}{'学号':<8}{'姓名':<6}{'班级':<6}{'性别':<6}{'语文':>6}{'数学':>6}{'英语':>6}{'总分':>8}")
+top10 = df.nlargest(10, "总分")
+for i, (_, r) in enumerate(top10.iterrows(), 1):
+    w(f"{i:<6}{r['学号']:<8}{r['姓名']:<6}{r['班级']:<6}{r['性别']:<6}"
+      f"{r['语文']:>6.1f}{r['数学']:>6.1f}{r['英语']:>6.1f}{r['总分']:>8.2f}")
+
+w()
+for sub in subjects:
+    w(f"（二）{sub}单科前 5 名：")
+    w(f"{'排名':<6}{'学号':<8}{'姓名':<6}{'班级':<6}{'性别':<6}{sub:>6}")
+    top5 = df.nlargest(5, sub)
+    for i, (_, r) in enumerate(top5.iterrows(), 1):
+        w(f"{i:<6}{r['学号']:<8}{r['姓名']:<6}{r['班级']:<6}{r['性别']:<6}{r[sub]:>6.1f}")
+    w()
 
 # ---------- 4. 分组统计 ----------
-w('=' * 60)
-w('四、按班级、性别分组统计各科平均分')
-w('=' * 60)
+w("四、分组统计与观察结论")
+w("-" * 40)
+w("（一）按班级统计各科平均分：")
+class_g = df.groupby("班级")[subjects].mean().round(2)
+w(class_g.to_string())
+w()
+w("班级平均总分（用于观察整体水平）：")
+class_total_g = df.groupby("班级")["总分"].mean().round(2)
+w(class_total_g.to_string())
 
-w('按班级分组各科平均分：')
-by_class = df.groupby('班级')[subjects].mean().round(2)
-w(by_class)
-w('')
-w('按性别分组各科平均分：')
-by_gender = df.groupby('性别')[subjects].mean().round(2)
-w(by_gender)
-w('')
-w('按班级+性别分组各科平均分：')
-by_both = df.groupby(['班级', '性别'])[subjects].mean().round(2)
-w(by_both)
-w('')
+w()
+w("（二）按性别统计各科平均分：")
+gender_g = df.groupby("性别")[subjects].mean().round(2)
+w(gender_g.to_string())
+w()
+gender_total_g = df.groupby("性别")["总分"].mean().round(2)
+w(gender_total_g.to_string())
 
-# 观察结论
-w('=' * 60)
-w('五、观察结论')
-w('=' * 60)
+w()
+w("（三）按班级+性别统计各科平均分：")
+cross_g = df.groupby(["班级", "性别"])[subjects].mean().round(2)
+w(cross_g.to_string())
 
-class_avg_total = df.groupby('班级')['总分'].mean()
-top_class = class_avg_total.idxmax()
-w(f'1. 从班级整体看，平均总分最高的班级为【{top_class}】（平均总分 {class_avg_total[top_class]:.1f}）；')
+# ---------- 5. 观察结论 ----------
+w()
+w("五、观察与结论")
+w("-" * 40)
 
-gender_avg_total = df.groupby('性别')['总分'].mean()
-higher_gender = gender_avg_total.idxmax()
-w(f'2. 从性别看，{higher_gender}生的平均总分更高（男生 {gender_avg_total["男"]:.1f} 分，女生 {gender_avg_total["女"]:.1f} 分）；')
+# 找班级最优
+best_class = class_total_g.idxmax()
+worst_class = class_total_g.idxmin()
+w(f"1. 整体水平：总分平均分最高的班级是【{best_class}】"
+  f"（{class_total_g.max():.2f}），最低的是【{worst_class}】"
+  f"（{class_total_g.min():.2f}），班级间存在一定差距。")
 
-gender_subj = df.groupby('性别')[subjects].mean()
-for s in subjects:
-    gmax = gender_subj[s].idxmax()
-    w(f'   - 在{s}科目上，{gmax}生平均分较高（男 {gender_subj[s]["男"]:.2f}，女 {gender_subj[s]["女"]:.2f}）')
+# 各科谁最均衡/最强
+for sub in subjects:
+    best_sub_cls = df.groupby("班级")[sub].mean().idxmax()
+    best_sub_val = df.groupby("班级")[sub].mean().max()
+    w(f"   - {sub}平均分最高的班级为 {best_sub_cls}（{best_sub_val:.2f}）。")
 
-w('')
-w('3. 从整体成绩看：')
-for s in subjects:
-    avg = df[s].mean()
-    pr = pass_rate(df[s])
-    er = excell_rate(df[s])
-    w(f'   - {s}：平均 {avg:.2f}，及格率 {pr:.1f}%，优秀率 {er:.1f}%')
-    if avg < 75:
-        w(f'     该科目整体偏弱，平均分低于75分，需关注教学。')
-    elif avg < 80:
-        w(f'     该科目处于中等水平。')
-    else:
-        w(f'     该科目整体表现良好。')
-w('')
-w('4. 全部学生成绩无缺失，数据完整，可直接用于教学评估。')
+# 性别对比
+gender_avg = gender_g
+for sub in subjects:
+    g = gender_avg.loc[:, sub]
+    stronger = g.idxmax()
+    diff = abs(g.loc['男'] - g.loc['女'])
+    w(f"2. 性别差异：{sub}科目中【{stronger}】平均分更高，"
+      f"男女生相差 {diff:.2f} 分。")
 
-# ---------- 保存 ----------
-with open(OUT, 'w', encoding='utf-8') as f:
-    f.write('\n'.join(lines))
+# 及格率/优秀率
+avg_pass = sum((df[s] >= 60).mean() for s in subjects) / len(subjects) * 100
+avg_good = sum((df[s] >= 90).mean() for s in subjects) / len(subjects) * 100
+w(f"3. 总体看，各科平均及格率约 {avg_pass:.1f}%，优秀率约 {avg_good:.1f}%。")
 
-print('报告已生成：', OUT)
+# 各科强弱
+strongest_sub = df[subjects].mean().idxmax()
+weakest_sub = df[subjects].mean().idxmin()
+w(f"4. 学科难度：学生整体平均分最高的是【{strongest_sub}】"
+  f"（{df[strongest_sub].mean():.2f}），相对较弱的是【{weakest_sub}】"
+  f"（{df[weakest_sub].mean():.2f}），建议在{weakest_sub}学科加强教学。")
+
+# 总分最值
+w(f"5. 总分最高 {df['总分'].max():.2f}，最低 {df['总分'].min():.2f}，"
+  f"全距较大，学生成绩分布存在明显分化。")
+
+# 写入文件
+with open(OUT, "w", encoding="utf-8") as f:
+    f.write("\n".join(lines) + "\n")
+
+print("报告已生成：", OUT)
+print("部分预览：")
+print("\n".join(lines[:60]))

@@ -9,31 +9,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 常用命令
 
 ```bash
-# 自检（无需 API key，验证工具 / loop / 上下文管理 / 终止条件，11 项断言）
-python -u self_test.py
-
 # 语法检查
 python -m py_compile agent.py llm.py
 
-# 模拟模式演示（无需 key，MOCK_SCRIPT 演示修 bug）
-python -u agent.py --mock --workdir . --task "demo_bugs/counter.py 运行结果不对，帮我修复"
+# 模拟模式演示（无需 key，MOCK_SCRIPT 演示"写文件→运行→验证"流程）
+python -u agent.py --mock --workdir . --task "写一个 hello.py 并运行它"
 
 # 真实模式（需 DEEPSEEK_API_KEY）
 set/export DEEPSEEK_API_KEY=<key>     # 从项目根目录 DeepSeekAPI.txt 读取
 python -u agent.py --workdir . --task "你的任务"     # 一次性任务
 python -u agent.py --workdir .                       # 交互式对话，exit 退出
 
-# 一键真实演示（自动读 key、重置 demo bug、跑 agent）
-run_demo.bat      # Windows 双击
-bash run_demo.sh  # Git Bash
-
-# 一键联网调研报告演示
-run_report_demo.bat
-bash run_report_demo.sh
-
-# 一键 Excel 数据分析演示（240 行成绩，agent 自主算指标+分组对比+写报告；自动清理上次产物，从零开始）
-run_analysis_demo.bat
-bash run_analysis_demo.sh
+# 一键 Excel 数据分析演示（240 行成绩，agent 自主算指标+分组对比+写报告）
+run_analysis_demo.bat      # Windows 双击
 ```
 
 ## 架构
@@ -45,7 +33,6 @@ bash run_analysis_demo.sh
   - `_trim_history`：上下文管理，超长时删最早一整轮（assistant 带 tool_calls + 其 tool 结果），保证不产生孤立的 tool 消息
   - `run_agent`：loop 主循环。协议要求先把 assistant 消息（含 tool_calls）放入历史，再 append 各 tool 结果；无 tool_calls 即终止；`max_steps` 强制停止
   - `main`：CLI（`--task` 一次性 / 无则交互；`--mock`；`--workdir`；`--max-steps`）
-- `web_fetch.py` / `html_to_pdf.py`：辅助命令（联网搜索/抓网页净化正文、HTML→PDF 调 Edge headless），供 agent 通过 run_bash 组合调用，不新增工具
 
 ## 关键设计点（面试答辩素材）
 
@@ -55,8 +42,4 @@ bash run_analysis_demo.sh
 
 ## 演示场景
 
-- `demo_bugs/`：修 bug（单词统计程序 counter.py，`run_demo.bat` 每次运行前会把它重置回 bug 版）
-- `demo_excel/`：Excel 平均分（class_scores.xlsx，agent 用 pandas 读取计算）
-- `demo_todo/`：从零写待办工具 + 测试（todo.py / test_todo.py，agent 自主生成）
-- `demo_report/`：联网调研报告（agent 自主搜索+抓官方文档→提炼表格→生成 PDF；零第三方依赖）
-- `demo_analysis/`：Excel 数据分析（`class_scores.xlsx` 240 行成绩，agent 用 pandas 算平均/最高/及格率、总分前10、按班级性别分组对比，输出中文报告 `analysis_report.txt`；`run_analysis_demo.bat` 一键运行，`--max-steps 40`，任务描述含 Windows 编码提示；bat 为 GBK 编码，启动前自动删除上次的 analysis.py 与 analysis_report.txt，保证 agent 从零开始）
+- `demo_analysis/`：Excel 数据分析（`class_scores.xlsx` 240 行成绩，agent 用 pandas 算平均/最高/及格率、总分前10、按班级性别分组对比，输出中文报告 `analysis_report.txt`；`run_analysis_demo.bat` 一键运行，`--max-steps 40`，任务描述含 Windows 编码提示；bat 为 GBK 编码，自动从 `..\DeepSeekAPI.txt` 读 key，不会自动清理上次的 analyze.py / analysis_report.txt）

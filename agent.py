@@ -231,15 +231,11 @@ def run_agent(llm, task, workdir, max_steps=30, verbose=True):
 
 
 MOCK_SCRIPT = [
-    (None, [{"id": "m1", "name": "run_bash", "arguments": {"command": "dir demo_bugs"}}]),
-    (None, [{"id": "m2", "name": "read_file", "arguments": {"path": "demo_bugs/counter.py"}}]),
-    (None, [{"id": "m3", "name": "run_bash", "arguments": {"command": "python demo_bugs/counter.py demo_bugs/input.txt"}}]),
-    ("我发现 bug 了：count_words 里 `word_counts[w] = 1` 应改为 `+= 1`，否则计数永远为 1。",
-     [{"id": "m4", "name": "write_file",
-       "arguments": {"path": "demo_bugs/counter.py",
-                     "content": "# counter.py - 统计文本中每个单词出现次数\nimport sys\n\n\ndef count_words(text):\n    words = text.lower().split()\n    word_counts = {}\n    for w in words:\n        w = w.strip(\".,;:!?'\\\"()\")\n        if not w:\n            continue\n        word_counts[w] = word_counts.get(w, 0) + 1\n    return word_counts\n\n\ndef main():\n    if len(sys.argv) < 2:\n        print(\"用法: python counter.py <文件名>\")\n        sys.exit(1)\n    with open(sys.argv[1], encoding=\"utf-8\") as f:\n        text = f.read()\n    counts = count_words(text)\n    for w in sorted(counts, key=lambda x: (-counts[x], x)):\n        print(f\"{w}: {counts[w]}\")\n\n\nif __name__ == \"__main__\":\n    main()\n"}}]),
-    (None, [{"id": "m5", "name": "run_bash", "arguments": {"command": "python demo_bugs/counter.py demo_bugs/input.txt"}}]),
-    ("修复成功！统计结果现在正确了（the 出现 3 次，不再是 1 次）。", None),
+    (None, [{"id": "m1", "name": "run_bash", "arguments": {"command": "dir"}}]),
+    (None, [{"id": "m2", "name": "write_file",
+             "arguments": {"path": "hello.py", "content": "# hello.py\nprint(\"hello from agent\")"}}]),
+    (None, [{"id": "m3", "name": "run_bash", "arguments": {"command": "python hello.py"}}]),
+    ("任务完成：已创建并运行 hello.py，输出 hello from agent。", None),
 ]
 
 
