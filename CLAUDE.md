@@ -31,7 +31,7 @@ bash run_demo.sh  # Git Bash
 run_report_demo.bat
 bash run_report_demo.sh
 
-# 一键 Excel 数据分析演示（240 行成绩，agent 自主算指标+分组对比+写报告）
+# 一键 Excel 数据分析演示（240 行成绩，agent 自主算指标+分组对比+写报告；自动清理上次产物，从零开始）
 run_analysis_demo.bat
 bash run_analysis_demo.sh
 ```
@@ -59,4 +59,4 @@ bash run_analysis_demo.sh
 - `demo_excel/`：Excel 平均分（class_scores.xlsx，agent 用 pandas 读取计算）
 - `demo_todo/`：从零写待办工具 + 测试（todo.py / test_todo.py，agent 自主生成）
 - `demo_report/`：联网调研报告（agent 自主搜索+抓官方文档→提炼表格→生成 PDF；零第三方依赖）
-- `demo_analysis/`：Excel 数据分析（`class_scores.xlsx` 240 行成绩，agent 用 pandas 算平均/最高/及格率、总分前10、按班级性别分组对比，输出中文报告 `analysis_report.txt`；`run_analysis_demo.bat` 一键运行，`--max-steps 40`，任务描述含 Windows 编码提示）
+- `demo_analysis/`：Excel 数据分析（`class_scores.xlsx` 240 行成绩，agent 用 pandas 算平均/最高/及格率、总分前10、按班级性别分组对比，输出中文报告 `analysis_report.txt`；`run_analysis_demo.bat` 一键运行，`--max-steps 40`，任务描述含 Windows 编码提示；bat 为 GBK 编码，启动前自动删除上次的 analysis.py 与 analysis_report.txt，保证 agent 从零开始）

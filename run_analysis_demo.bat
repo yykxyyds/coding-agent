@@ -1,8 +1,10 @@
 @echo off
-chcp 65001 >nul
 cd /d "%~dp0"
 for /f "usebackq delims=" %%k in ("..\DeepSeekAPI.txt") do set "DEEPSEEK_API_KEY=%%k"
-echo [1/2] å¯åŠ¨çœŸå®æ¼”ç¤ºï¼šExcel æ•°æ®åˆ†æ...
-echo [2/2] agent å°†è‡ªä¸»è¯»å– 240 è¡Œæˆç»©æ•°æ®ã€è®¡ç®—æŒ‡æ ‡ã€åˆ†ç»„å¯¹æ¯”ã€è¾“å‡ºåˆ†ææŠ¥å‘Š
-python -u agent.py --workdir . --max-steps 40 --task "è¯·åˆ†æ demo_analysis/class_scores.xlsx å­¦ç”Ÿæˆç»©æ•°æ®ï¼š1.æ£€æŸ¥æ•°æ®æ¦‚è§ˆï¼›2.è®¡ç®—è¯­æ–‡æ•°å­¦è‹±è¯­çš„å¹³å‡åˆ†æœ€é«˜æœ€ä½åŠæ ¼ç‡ä¼˜ç§€ç‡ï¼›3.ç®—æ€»åˆ†å¹¶ç»™å‡ºæ€»åˆ†å‰10å’Œå•ç§‘å‰5ï¼›4.æŒ‰ç­çº§å’Œæ€§åˆ«åˆ†ç»„ç»Ÿè®¡å„ç§‘å¹³å‡åˆ†å¹¶ç»™å‡ºè§‚å¯Ÿç»“è®ºï¼›5.æ•´ç†æˆä¸­æ–‡æŠ¥å‘Šä¿å­˜åˆ° demo_analysis/analysis_report.txtã€‚å¯ç”¨ pandas/openpyxlã€‚æç¤ºï¼šWindows ä¸Š python -c è¾“å‡ºä¸­æ–‡æ˜“ä¹±ç ï¼Œå»ºè®®å†™è„šæœ¬æ–‡ä»¶å†è¿è¡Œã€‚åªå…è®¸ä¿®æ”¹ demo_analysis ç›®å½•ã€‚"
+echo [1/3] ÇåÀíÉÏ´ÎÑİÊ¾²úÎï£¨±£ÁôÊı¾İÎÄ¼ş£©...
+if exist demo_analysis\analysis.py del demo_analysis\analysis.py
+if exist demo_analysis\analysis_report.txt del demo_analysis\analysis_report.txt
+echo [2/3] Æô¶¯ÕæÊµÑİÊ¾£ºExcel Êı¾İ·ÖÎö...
+echo [3/3] agent ½«×ÔÖ÷¶ÁÈ¡ 240 ĞĞ³É¼¨Êı¾İ¡¢¼ÆËãÖ¸±ê¡¢·Ö×é¶Ô±È¡¢Êä³ö·ÖÎö±¨¸æ
+python -u agent.py --workdir . --max-steps 40 --task "Çë·ÖÎö demo_analysis/class_scores.xlsx Ñ§Éú³É¼¨Êı¾İ£º1.¼ì²éÊı¾İ¸ÅÀÀ£»2.¼ÆËãÓïÎÄÊıÑ§Ó¢ÓïµÄÆ½¾ù·Ö×î¸ß×îµÍ¼°¸ñÂÊÓÅĞãÂÊ£»3.Ëã×Ü·Ö²¢¸ø³ö×Ü·ÖÇ°10ºÍµ¥¿ÆÇ°5£»4.°´°à¼¶ºÍĞÔ±ğ·Ö×éÍ³¼Æ¸÷¿ÆÆ½¾ù·Ö²¢¸ø³ö¹Û²ì½áÂÛ£»5.ÕûÀí³ÉÖĞÎÄ±¨¸æ±£´æµ½ demo_analysis/analysis_report.txt¡£¿ÉÓÃ pandas/openpyxl¡£ÌáÊ¾£ºWindows ÉÏ python -c Êä³öÖĞÎÄÒ×ÂÒÂë£¬½¨ÒéĞ´½Å±¾ÎÄ¼şÔÙÔËĞĞ¡£Ö»ÔÊĞíĞŞ¸Ä demo_analysis Ä¿Â¼¡£"
 pause
