@@ -22,6 +22,9 @@ python -u agent.py --workdir .                       # 交互式对话，exit �
 
 # 一键 Excel 数据分析演示（240 行成绩，agent 自主算指标+分组对比+写报告）
 run_analysis_demo.bat      # Windows 双击
+
+# 一键交互式对话（自动从根目录 ..\DeepSeekAPI.txt 读 key，无需手动设环境变量）
+start_interactive.bat      # Windows 双击
 ```
 
 ## 架构
@@ -43,3 +46,11 @@ run_analysis_demo.bat      # Windows 双击
 ## 演示场景
 
 - `demo_analysis/`：Excel 数据分析（`class_scores.xlsx` 240 行成绩，agent 用 pandas 算平均/最高/及格率、总分前10、按班级性别分组对比，输出中文报告 `analysis_report.txt`；`run_analysis_demo.bat` 一键运行，`--max-steps 40`，任务描述含 Windows 编码提示；bat 为 GBK 编码，自动从 `..\DeepSeekAPI.txt` 读 key，不会自动清理上次的 analyze.py / analysis_report.txt）
+- `demo_game/`：贪吃蛇游戏（`snake.py`，tkinter 实现、零第三方依赖，无需 API key）。`启动贪吃蛇.bat` 或 `python -u demo_game/snake.py` 直接运行
+
+## 提交规范（公开仓库交付物）
+
+- 仓库须公开（https://github.com/yykxyyds/coding-agent），保留完整提交历史，不压缩不改写，截止后不再推送。
+- 提交信息沿用现有前缀：`feat` / `docs` / `demo` / `chore` / `test`。
+- 严禁入库：API key、`DeepSeekAPI.txt`（在仓库目录之外，勿复制进来）、任何含姓名/院校的文件（双盲）。
+- 提交前 `git status` 确认无敏感文件混入；`.idea/` 等 IDE 产物不入库。
