@@ -1,0 +1,6 @@
+def win(self):
+        if not self.game_over and not self.victory:
+            self.victory = True
+            self.game_over = True
+            self._show_message("胜利！所有僵尸被消灭 🎉")
+

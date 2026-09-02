@@ -1,0 +1,44 @@
+def _update_zombies(self):
+        # 生成待出僵尸
+        if self.wave > 0 and self.pending_zombies > 0:
+            self.zombie_frame += 1
+            if self.zombie_frame >= self.zombie_timer:
+                self.zombie_frame = 0
+                self.pending_zombies -= 1
+                self._spawn_zombie()
+
+        for z in self.zombies[:]:
+            z["frame"] += 1
+            # 减速
+            speed = z["speed"]
+            if z["slow_frame"] > 0:
+                z["slow_frame"] -= 1
+                speed *= 0.4
+
+            # 检查面前是否有植物阻挡
+            blocking = False
+            front_x = z["x"] - 20
+            for pl in self.plants:
+                plx = GRID_X + pl["col"] * CELL + CELL // 2
+                if pl["row"] == z["row"] and plx <= front_x and abs(plx - front_x) < 70:
+                    blocking = True
+                    # 啃食该植物
+                    pl["hp"] -= ZOMBIES[z["type"]]["damage"] / 2.0
+                    self._draw_plant_hp(pl)
+                    if pl["hp"] <= 0:
+                        self.canvas.delete(pl["id"])
+                        self.canvas.delete(pl["hp_id"])
+                        self.plants.remove(pl)
+                    break
+            if not blocking:
+                z["x"] -= speed
+                self.canvas.move(z["id"], -speed, 0)
+                self._draw_zombie_hp(z)
+
+            # 僵尸到达左边 -> 游戏失败
+            if z["x"] < GRID_X - 10:
+                self.game_over = True
+                self._show_message("僵尸进了房子！游戏失败 😢")
+                return
+
+    

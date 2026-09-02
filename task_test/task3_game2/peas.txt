@@ -1,0 +1,22 @@
+def _update_peas(self):
+        for pea in self.peas[:]:
+            pea["x"] += 12
+            self.canvas.coords(pea["id"], pea["x"] - 8, pea["y"] - 8,
+                               pea["x"] + 8, pea["y"] + 8)
+            if pea["x"] > WIDTH + 20:
+                self.peas.remove(pea)
+                self.canvas.delete(pea["id"])
+                continue
+            # 命中僵尸
+            for z in self.zombies:
+                if z["row"] == pea["row"] and abs(z["x"] - pea["x"]) < 26:
+                    z["hp"] -= pea["damage"]
+                    if pea["slow"]:
+                        z["slow_frame"] = 120   # 减速2秒
+                    if z["hp"] <= 0:
+                        self._kill_zombie(z)
+                    self.peas.remove(pea)
+                    self.canvas.delete(pea["id"])
+                    break
+
+    
