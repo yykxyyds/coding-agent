@@ -10,10 +10,17 @@
 仅依赖 Python 标准库。真实调用 DeepSeek；无 key 时可用 --mock 模拟。
 """
 import argparse
+import html
 import json
 import os
+import re
 import subprocess
 import sys
+import time
+import urllib.parse
+import urllib.request
+import xml.etree.ElementTree as ET
+from datetime import datetime
 
 from llm import LLMClient, LLMError, MockLLM
 
@@ -21,11 +28,24 @@ from llm import LLMClient, LLMError, MockLLM
 MAX_OUTPUT = 8000      # 工具结果返回给模型的内容上限（字符），防止上下文被单条长输出塞爆
 CMD_TIMEOUT = 60       # 单条命令超时（秒），防止命令无限卡住
 
+# 上下文预算（无 token 计算库，用字符数近似 token 占用；中文约 1 字符≈1 token）
+MAX_HISTORY_CHARS = 200000   # 历史总字符数超过则触发压缩；对 128K/1M 上下文均留足余量，可经 --max-history-chars 覆盖
+MAX_HISTORY_MSGS = 600       # 消息条数绝对护栏：防止大量极短消息绕过字符预算
+KEEP_RECENT_ROUNDS = 15      # 压缩时保留的最近完整轮数（活动区；上下文窗口越大应越大）
+MAX_STEPS = 200              # 默认最大循环步数（安全阀，防死循环）：配合 compact 上下文不会爆，正常任务极少触顶
+
+# 联网调研（web 工具）参数
+WEB_TIMEOUT = 15      # 单次联网请求超时（秒）：厂商定价页/搜索偶有慢，留足时间又不会卡死
+WEB_MAX_CHARS = 6000  # web_fetch 返回正文上限（字符）：网页正文动辄几万字，截断防上下文爆掉
+MAX_LOOP_ROUNDS = 100  # /loop 定时执行的最大轮数护栏：防忘记停导致挂机
+
 SYSTEM_PROMPT = """你是编程智能体，负责在本地工作目录 {workdir} 中完成用户交给的编程任务。
 你可以通过调用工具来操作电脑：
 - run_bash：执行 shell 命令（Windows 环境，列目录用 dir；可用 python 运行/测试程序）
 - read_file：读取文本文件
 - write_file：写入或覆盖文本文件
+- web_search：联网搜索，返回结果标题/URL/摘要（调研、查资料、找官方页面用）
+- web_fetch：抓取一个网页的正文纯文本（读定价页、文档、新闻内容）
 
 工作规则：
 1. 动手前先了解现状：先查看目录和关键文件，再开始改动。
@@ -79,6 +99,36 @@ TOOLS = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_search",
+            "description": "联网搜索：向搜索引擎查询关键词，返回最多 10 条结果的标题、URL、摘要。用于调研、查资料、找官方定价/文档页面。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string", "description": "搜索关键词，中文或英文，尽量具体（如'阿里云百炼 qwen API 价格'）"},
+                    "max_results": {"type": "integer", "description": "返回结果条数，默认 8"}
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "web_fetch",
+            "description": "抓取一个网页并返回正文纯文本。用于读取搜索结果中的具体页面（定价页、文档、新闻）。对 JS 动态渲染的空页面会明确提示。",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "网页 URL（http/https）"},
+                    "max_chars": {"type": "integer", "description": "最多返回的字符数，默认 6000"}
+                },
+                "required": ["url"],
+            },
+        },
+    },
 ]
 
 
@@ -104,6 +154,12 @@ def _decode_bytes(raw):
         except UnicodeDecodeError:
             continue
     return raw.decode("utf-8", errors="replace")
+
+
+def _clean_text(s):
+    """剔除字符串里的孤立代理字符（Windows 终端/管道编码错配时 input 可能读到 surrogate），
+    避免其污染上下文或让 JSON 落盘崩溃；编码错配造成的乱码中文无法自动纠正，靠终端编码一致保证。"""
+    return s.encode("utf-8", "replace").decode("utf-8")
 
 
 def tool_run_bash(command, workdir):
@@ -192,6 +248,86 @@ def tool_write_file(path, content, workdir):
     return f"已写入文件 {path}（{len(content)} 字符）。"
 
 
+# ── 联网调研：web_search / web_fetch ──
+# 调研类任务（如"联网查 API 价格")原来只能靠 run_bash 手拼 requests 脚本，
+# 脆弱且浪费步数；这两个工具用标准库直连，让 agent 能"先搜索发现页面、再抓正文"。
+
+
+def _http_get(url, timeout=WEB_TIMEOUT):
+    """urllib 抓取 URL 返回 bytes；失败把错误转成文本 bytes 返回（不抛异常，错误流向工具结果）。"""
+    try:
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"})
+        return urllib.request.urlopen(req, timeout=timeout).read()
+    except Exception as e:
+        return f"[网络错误] {type(e).__name__}: {e}".encode("utf-8")
+
+
+def _decode_http(raw):
+    """网页字节解码：按 UTF-8 → GBK 试解（中文站多为 GBK），都失败用替换符兜底。"""
+    for enc in ("utf-8", "gbk"):
+        try:
+            return raw.decode(enc)
+        except UnicodeDecodeError:
+            continue
+    return raw.decode("utf-8", errors="replace")
+
+
+def _html_to_text(html_text):
+    """HTML → 纯文本：删 script/style/head 等、块级标签换行、去标签、反转义、压空行。"""
+    html_text = re.sub(r"(?is)<(script|style|noscript|head|iframe)[^>]*>.*?</\1>", " ", html_text)
+    html_text = re.sub(r"(?i)<(br|/p|/div|/li|/h[1-6]|/tr|/table|/ul|/ol)[^>]*>", "\n", html_text)
+    html_text = re.sub(r"<[^>]+>", " ", html_text)
+    text = html.unescape(html_text)
+    lines = [ln.strip() for ln in text.splitlines()]
+    return "\n".join(ln for ln in lines if ln)
+
+
+def tool_web_search(query, max_results=8):
+    """工具④：联网搜索（Bing RSS 端点，返回真实 URL，纯标准库解析 XML）。
+    max_results 限制在 1~10，结果按 标题/URL/摘要 逐条列出。"""
+    if not query or not query.strip():
+        return "[错误] 搜索关键词为空。"
+    url = ("https://www.bing.com/search?q=" + urllib.parse.quote(query.strip())
+           + "&format=rss&count=10")
+    raw = _http_get(url)
+    text = _decode_http(raw)
+    if text.startswith("[网络错误]"):
+        return text
+    try:
+        root = ET.fromstring(text)
+        items = root.findall(".//item")
+    except Exception as e:
+        return f"[错误] 搜索解析失败: {e}"
+    if not items:
+        return "[结果] 无搜索结果，换个关键词重试。"
+    max_results = max(1, min(int(max_results or 8), 10))
+    out = []
+    for i, item in enumerate(items[:max_results], 1):
+        title = (item.findtext("title") or "").strip()
+        link = (item.findtext("link") or "").strip()
+        desc = re.sub(r"\s+", " ", (item.findtext("description") or "")).strip()[:200]
+        out.append(f"{i}. {title}\n   URL: {link}\n   摘要: {desc}")
+    return "\n\n".join(out)
+
+
+def tool_web_fetch(url, max_chars=WEB_MAX_CHARS):
+    """工具⑤：抓取网页正文纯文本。JS 渲染的空页面会明确提示，引导模型换数据来源。"""
+    if not url.startswith(("http://", "https://")):
+        return "[错误] 只支持 http/https 链接。"
+    raw = _http_get(url)
+    text = _decode_http(raw)
+    if text.startswith("[网络错误]"):
+        return text
+    body = _html_to_text(text)
+    body = re.sub(r"\n{3,}", "\n\n", body).strip()
+    if not body:
+        return "[结果] 页面无可见文本（可能是 JS 动态渲染），请换搜索结果里的其他来源或换关键词。"
+    if len(body) > max_chars:
+        body = body[:max_chars] + f"\n…[内容过长，已截断 {len(body) - max_chars} 字符]"
+    return f"[网页] {url}\n\n{body}"
+
+
 def execute_tool(name, args, workdir):
     """分发器：按工具名调用对应实现；未知工具返回错误字符串（回传模型自我纠正）。
 
@@ -203,6 +339,10 @@ def execute_tool(name, args, workdir):
         return tool_read_file(args.get("path", ""), workdir)
     if name == "write_file":
         return tool_write_file(args.get("path", ""), args.get("content", ""), workdir)
+    if name == "web_search":
+        return tool_web_search(args.get("query", ""), args.get("max_results", 8))
+    if name == "web_fetch":
+        return tool_web_fetch(args.get("url", ""), args.get("max_chars", WEB_MAX_CHARS))
     return f"[错误] 未知工具: {name}"
 
 
@@ -234,17 +374,226 @@ def _trim_history(messages, max_len=50):
     return messages
 
 
-def run_agent(llm, task, workdir, max_steps=30, verbose=True):
+# 参考 Claude Code 的 9 段压缩提示词，精简为 coding agent 最关键的 4 类信息
+COMPACT_PROMPT = """你是上下文压缩器。下面是编程智能体（coding agent）的一段对话历史（JSON 数组，含 user/assistant/tool 消息）。请把它压缩成 300 字以内的中文摘要，供后续继续执行任务时参考。
+
+摘要必须保留以下事实信息（出现过的不能丢，没有的可省略）：
+1. 用户的原始请求与目标
+2. 涉及的文件路径、关键代码片段或数据结构
+3. 已执行的重要命令与结果、遇到的错误与修复方式
+4. 尚未完成的待办事项、当前工作进度与下一步计划
+
+要求：只输出摘要正文，不要多余解释；省略客套与重复，但保留最终结论。"""
+
+
+def _summarize(llm, messages):
+    """把一段历史交给模型总结成摘要；调用失败返回 None，由调用方降级为硬删。"""
+    if not messages:
+        return None
+    # 控制请求体大小：每条 content 截断到 1000 字符、最多取末尾 100 条（越靠近活动区越关键），
+    # 避免总结请求本身超出上下文
+    view = []
+    for m in messages[-100:]:
+        msg = {"role": m.get("role", "user")}
+        c = m.get("content") or ""
+        if len(c) > 1000:
+            c = c[:1000] + "\n…[已截断]"
+        msg["content"] = c
+        if m.get("tool_calls"):
+            msg["tool_calls"] = m["tool_calls"]
+        if m.get("tool_call_id"):
+            msg["tool_call_id"] = m["tool_call_id"]
+        view.append(msg)
+    payload = [
+        {"role": "system", "content": COMPACT_PROMPT},
+        {"role": "user", "content": "以下是需要压缩的对话历史：\n" + json.dumps(view, ensure_ascii=False)},
+    ]
+    try:
+        content, _ = llm.chat(payload, tools=None)
+    except LLMError:
+        return None
+    content = (content or "").strip()
+    return content or None
+
+
+def _keep_start(messages, keep_recent):
+    """从末尾往前数 keep_recent 个完整轮，返回保留区起点下标。
+
+    一轮 = 一条非 tool 消息（user/assistant）+ 紧随其后的所有 tool 结果；
+    保证保留区第一条不是孤立 tool 消息（协议要求 tool 紧跟其 assistant）。
+    """
+    n = len(messages)
+    i = n - 1
+    rounds = 0
+    while i >= 1 and rounds < keep_recent:
+        while i >= 1 and messages[i].get("role") == "tool":   # 跳过 tool，归入前一个 assistant 轮
+            i -= 1
+        if i < 1:
+            break
+        rounds += 1
+        i -= 1
+    return i + 1
+
+
+def _history_chars(messages):
+    """历史内容总字符数，近似上下文占用（无 token 库依赖）。"""
+    return sum(len(m.get("content") or "") for m in messages)
+
+
+def _compact_history(messages, llm, max_chars=MAX_HISTORY_CHARS, keep_recent=KEEP_RECENT_ROUNDS, force=False):
+    """上下文管理：超长时压缩而非整轮删除（参考 Claude Code 的双区保留）。
+
+    force=False（自动触发）：历史总字符超 max_chars，或条数超 MAX_HISTORY_MSGS 时压缩。
+    force=True（手动 /compact）：跳过预算检查，无条件把更老的历史压缩成摘要。
+    两者都保留最近 keep_recent 个完整轮次原样，摘要作为带边界标记的 user 消息前置到 system 之后；
+    压缩调用失败或无可压内容时，自动模式降级为 _trim_history 硬删兜底，手动模式原样返回。
+    """
+    if not force and len(messages) <= MAX_HISTORY_MSGS and _history_chars(messages) <= max_chars:
+        return messages
+    keep_start = _keep_start(messages, keep_recent)
+    if keep_start <= 1:
+        # 历史太短（没有可压缩的旧轮次）：手动模式原样返回，自动模式降级硬删
+        return messages if force else _trim_history(messages, MAX_HISTORY_MSGS)
+    summary = _summarize(llm, messages[1:keep_start])
+    if summary:
+        compacted = [messages[0],
+                     {"role": "user", "content": f"[先前对话已压缩，细节可能有损]\n{summary}"},
+                     ] + messages[keep_start:]
+        if force:
+            return compacted
+        if len(compacted) <= MAX_HISTORY_MSGS and _history_chars(compacted) <= max_chars:
+            return compacted
+    return messages if force else _trim_history(messages, MAX_HISTORY_MSGS)
+
+
+def _interrupt_requested():
+    """检测用户是否按了 ESC（Windows 标准库 msvcrt；非 Windows 恒为 False）。
+
+    只认 ESC 为中断信号；运行中键入的其他字符被消耗丢弃，
+    避免残留到后续 input() 造成任务文本混乱。
+    """
+    try:
+        import msvcrt
+    except ImportError:
+        return False
+    hit = False
+    while msvcrt.kbhit():
+        if msvcrt.getch() == b"\x1b":   # ESC 键
+            hit = True
+    return hit
+
+
+# ── 会话持久化（resume）：对话历史统一存到项目根 session/<id>.json（不随 workdir 变，resume 永远找同一个目录）──
+SESSION_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "session")
+
+
+def _new_session_id():
+    """会话 ID = 启动时刻时间戳（可排序，一眼看出先后）。"""
+    return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def _session_dir():
+    return SESSION_DIR
+
+
+def _session_path(sid):
+    return os.path.join(SESSION_DIR, f"{sid}.json")
+
+
+def _save_session(sid, messages):
+    os.makedirs(SESSION_DIR, exist_ok=True)
+    with open(_session_path(sid), "w", encoding="utf-8") as f:
+        json.dump(messages, f, ensure_ascii=True)   # ASCII 转义：任何字符（含代理字符）都能安全落盘
+
+
+def _load_session(sid):
+    p = _session_path(sid)
+    if not os.path.isfile(p):
+        return None
+    with open(p, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _list_sessions():
+    """返回会话 ID 列表，最新在前。"""
+    if not os.path.isdir(SESSION_DIR):
+        return []
+    return sorted((f[:-5] for f in os.listdir(SESSION_DIR) if f.endswith(".json")), reverse=True)
+
+
+def _refresh_system(messages, workdir):
+    """恢复会话时把 system 消息重建为当前工作目录的提示（原文件里可能是旧 workdir）。"""
+    if messages and messages[0].get("role") == "system":
+        messages[0]["content"] = SYSTEM_PROMPT.format(workdir=workdir)
+    return messages
+
+
+def _first_task(messages):
+    """取会话首个用户任务的简短描述（供列表展示）。"""
+    for m in messages:
+        if m.get("role") == "user":
+            c = (m.get("content") or "").strip()
+            if c.startswith("[先前对话已压缩"):
+                return "（已压缩的历史会话）"
+            return c[:40]
+    return ""
+
+
+def _choose_session():
+    """--resume：列出历史会话，用户输入序号选择；0 跳过。返回 (sid, messages) 或 (None, None)。"""
+    sids = _list_sessions()
+    if not sids:
+        print("暂无历史会话（session/ 为空），开始全新会话。")
+        return None, None
+    print("历史会话（session/）：")
+    for i, sid in enumerate(sids, 1):
+        msgs = _load_session(sid) or []
+        print(f"  [{i}] {sid}  {_first_task(msgs)}  ({len(msgs)} 条)")
+    try:
+        pick = input("输入序号恢复（0 跳过，开始新会话）: ").strip()
+    except EOFError:
+        return None, None
+    if pick == "0":
+        return None, None
+    try:
+        idx = int(pick) - 1
+        if 0 <= idx < len(sids):
+            return sids[idx], _load_session(sids[idx])
+    except ValueError:
+        pass
+    print("输入无效，开始全新会话。")
+    return None, None
+
+
+def _print_available():
+    sids = _list_sessions()
+    if not sids:
+        print("暂无历史会话。")
+        return
+    print("可用会话：")
+    for sid in sids:
+        print(f"  {sid}")
+
+
+def run_agent(llm, task, workdir, max_steps=MAX_STEPS, verbose=True, compact=True, messages=None, max_chars=MAX_HISTORY_CHARS):
     """
     agent 主循环（全项目发动机）。
     流程：发历史+工具定义 → 模型返回 → 无工具调用即完成 / 有则本地执行+回填 → 循环。
+    messages：传入已有会话历史则续跑（追加新任务），None 则新建会话；返回的 messages 供下次续跑。
     """
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT.format(workdir=workdir)},
-        {"role": "user", "content": task},
-    ]
+    if messages:
+        messages = list(messages) + [{"role": "user", "content": task}]
+    else:
+        messages = [
+            {"role": "system", "content": SYSTEM_PROMPT.format(workdir=workdir)},
+            {"role": "user", "content": task},
+        ]
     final = None
     for step in range(1, max_steps + 1):
+        if _interrupt_requested():                          # 用户按 ESC 可随时中断
+            print("\n⏹ 检测到 ESC，任务已中止。")
+            final = "（用户按 ESC 中断，任务未确认完成）"
+            break
         if verbose:
             print(f"\n─── 第 {step} 步 ───")
         content, tool_calls = llm.chat(messages, tools=TOOLS)   # ① 发历史+工具定义
@@ -277,7 +626,10 @@ def run_agent(llm, task, workdir, max_steps=30, verbose=True):
                 preview = result.replace("\n", " | ")[:400]
                 print(f"  ↳ {preview}")
             messages.append({"role": "tool", "tool_call_id": tc["id"], "content": result})
-        messages = _trim_history(messages)                      # ⑤ 超长裁剪
+        if compact:
+            messages = _compact_history(messages, llm, max_chars=max_chars)  # ⑤ 超长时压缩（保留最近轮次+LLM 摘要）
+        else:
+            messages = _trim_history(messages, MAX_HISTORY_MSGS)              # ⑤' --no-compact 退化为纯硬删
     else:
         # for 循环正常走完（没有 break）说明达到了 max_steps
         if verbose:
@@ -300,8 +652,13 @@ def main():
     ap = argparse.ArgumentParser(description="编程智能体：自主读写文件、执行命令完成编程任务")
     ap.add_argument("--task", help="一次性任务；不填则进入交互式对话")
     ap.add_argument("--workdir", default=".", help="agent 的工作目录（默认当前目录）")
-    ap.add_argument("--max-steps", type=int, default=30, help="最大循环步数")
+    ap.add_argument("--max-steps", type=int, default=MAX_STEPS, help=f"最大循环步数（默认 {MAX_STEPS}，安全阀防死循环）")
     ap.add_argument("--mock", action="store_true", help="用模拟模型跑通逻辑（无需 API key）")
+    ap.add_argument("--no-compact", action="store_true", help="超长时退化为硬删整轮，不做 LLM 总结压缩")
+    ap.add_argument("--max-history-chars", type=int, default=MAX_HISTORY_CHARS,
+                    help=f"历史字符预算，超过则触发压缩（默认 {MAX_HISTORY_CHARS}，按接入模型的上下文窗口调整）")
+    ap.add_argument("--session", metavar="ID", help="恢复指定会话 ID（session/<ID>.json），在其上下文上继续")
+    ap.add_argument("--resume", action="store_true", help="启动时列出历史会话，输入序号选择恢复")
     args = ap.parse_args()
 
     try:
@@ -327,21 +684,142 @@ def main():
             sys.exit(1)
 
     if args.task:
-        final, _ = run_agent(llm, args.task, workdir, max_steps=args.max_steps)
+        # 一次性任务：可选 --session 恢复旧上下文；跑完自动保存，方便 --session 续跑
+        conversation = None
+        session_id = _new_session_id()
+        if args.session:
+            conversation = _load_session(args.session)
+            if conversation is None:
+                print(f"❌ 会话不存在：{args.session}")
+                _print_available()
+                sys.exit(1)
+            session_id = args.session
+            _refresh_system(conversation, workdir)
+            print(f"已恢复会话 {args.session}（{len(conversation)} 条消息），在此基础上继续。")
+        final, conversation = run_agent(llm, args.task, workdir, max_steps=args.max_steps,
+                                        compact=not args.no_compact, messages=conversation,
+                                        max_chars=args.max_history_chars)
+        _save_session(session_id, conversation)
         print(f"\n✔ 任务结束，最终回复：{final}")
+        print(f"会话已保存：session/{session_id}.json（下次可用 --session {session_id} 恢复继续）")
     else:
-        # 交互式对话：输入 exit 退出
-        print(f"编程智能体已启动（工作目录: {workdir}）。输入任务开始，输入 exit 退出。")
+        # 交互式对话：同一终端上下文统一（跨任务累积）；exit 退出；/clear 清空；/compact 手动压缩；/resume 恢复；/loop 循环；运行中按 ESC 中断
+        print(f"编程智能体已启动（工作目录: {workdir}）。")
+        print("输入任务开始；exit 退出；/clear 清空会话；/compact 压缩历史；/resume [ID] 恢复会话；/loop <间隔> 任务 定时执行；任务运行中按 ESC 可中断；")
+        print("启动时 --resume 或 --session <ID> 可恢复；交互中 /resume 无参列出历史会话选序号。")
+        session_id = _new_session_id()
+        conversation = None
+        if args.session:
+            conversation = _load_session(args.session)
+            if conversation is None:
+                print(f"❌ 会话不存在：{args.session}")
+                _print_available()
+                sys.exit(1)
+            session_id = args.session
+            _refresh_system(conversation, workdir)
+            print(f"已恢复会话 {args.session}（{len(conversation)} 条消息），继续累积上下文。")
+        elif args.resume:
+            sid, conv = _choose_session()
+            if conv is not None:
+                session_id, conversation = sid, _refresh_system(conv, workdir)
+                print(f"已恢复会话 {session_id}（{len(conversation)} 条消息）。")
+        print(f"当前会话 ID：{session_id}（下次可用 --session {session_id} 恢复）")
         while True:
             try:
-                task = input("\n你: ").strip()
+                task = _clean_text(input("\n你: ")).strip()
             except EOFError:
                 break
             if not task:
                 continue
             if task.lower() in ("exit", "quit"):
                 break
-            run_agent(llm, task, workdir, max_steps=args.max_steps)
+            if task.lower() in ("/clear", "clear"):
+                conversation = None
+                print("已清空会话上下文，开始全新对话。")
+                continue
+            if task.lower() in ("/compact", "compact"):
+                if conversation is None:
+                    print("还没有任何对话，无需压缩。")
+                    continue
+                before = len(conversation)
+                conversation = _compact_history(conversation, llm, force=True)
+                if len(conversation) == before:
+                    print("历史太短或压缩失败，未发生变化。")
+                    continue
+                summary = ""
+                if conversation[1].get("role") == "user" and "[先前对话已压缩" in conversation[1].get("content", ""):
+                    summary = conversation[1]["content"].split("\n", 1)[-1][:150]
+                print(f"已手动压缩：{before} -> {len(conversation)} 条消息。")
+                if summary:
+                    print(f"摘要：{summary}")
+                continue
+            if task.lower().startswith("/resume"):
+                # 交互内恢复会话：/resume <ID> 直接恢复指定 ID；/resume 无参则列出历史会话选序号。
+                # 切到目标会话后 session_id 同步更新，后续任务继续写回该会话文件。
+                parts = task.split(maxsplit=1)
+                if len(parts) == 2:
+                    sid = parts[1].strip()
+                    conv = _load_session(sid)
+                    if conv is None:
+                        print(f"❌ 会话不存在：{sid}")
+                        _print_available()
+                    else:
+                        conversation = _refresh_system(conv, workdir)
+                        session_id = sid
+                        print(f"已恢复会话 {sid}（{len(conversation)} 条消息），上下文已切换。")
+                else:
+                    sid, conv = _choose_session()
+                    if conv is not None:
+                        conversation = _refresh_system(conv, workdir)
+                        session_id = sid
+                        print(f"已恢复会话 {sid}（{len(conversation)} 条消息），上下文已切换。")
+                continue
+            if task.lower().startswith("/loop"):
+                # /loop <间隔> <任务>：每隔 interval 秒自动激活 agent 执行一次任务（类似 cc 的定时 loop）。
+                # 立即执行一轮，之后每间隔秒再自动执行；间隔支持 30s / 5m / 60（缺省单位=秒）。
+                # 轮间 sleep 每秒检测 ESC 可提前停止；MAX_LOOP_ROUNDS 护栏防忘记停挂机。
+                rest = task[5:].strip()
+                parts = rest.split(maxsplit=1)
+                interval = 60   # 默认 60 秒
+                if parts and re.match(r"^\d+[sm]?$", parts[0]):
+                    raw = parts[0]
+                    if raw[-1] in "sm":
+                        interval = int(raw[:-1]) * (60 if raw[-1] == "m" else 1)
+                    else:
+                        interval = int(raw)
+                    rest = parts[1] if len(parts) > 1 else ""
+                if not rest:
+                    print("用法：/loop <间隔> <任务>，例如 /loop 30s 检查服务器状态、/loop 5m 汇报天气。按 ESC 停止。")
+                    continue
+                loop_task = rest
+                rounds = 0
+                print(f"⏰ /loop 已启动：每 {interval} 秒自动执行「{loop_task}」，立即开始，按 ESC 停止。")
+                while True:
+                    rounds += 1
+                    print(f"\n─── /loop 第 {rounds} 轮（{datetime.now().strftime('%H:%M:%S')}）───")
+                    _, conversation = run_agent(llm, loop_task, workdir, max_steps=args.max_steps,
+                                                compact=not args.no_compact, messages=conversation,
+                                                max_chars=args.max_history_chars)
+                    _save_session(session_id, conversation)
+                    if rounds >= MAX_LOOP_ROUNDS:
+                        print(f"已到达 {MAX_LOOP_ROUNDS} 轮护栏，/loop 停止。")
+                        break
+                    stopped = False
+                    for _ in range(interval):
+                        if _interrupt_requested():
+                            stopped = True
+                            break
+                        time.sleep(1)
+                    if stopped:
+                        print(f"按 ESC，/loop 已停止（共执行 {rounds} 轮）。")
+                        break
+                continue
+            _, conversation = run_agent(llm, task, workdir, max_steps=args.max_steps,
+                                        compact=not args.no_compact, messages=conversation,
+                                        max_chars=args.max_history_chars)
+            _save_session(session_id, conversation)
+        if conversation:
+            _save_session(session_id, conversation)   # 退出前兜底保存
 
 
 if __name__ == "__main__":
