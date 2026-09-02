@@ -2,4 +2,6 @@ __pycache__/
 *.pyc
 .env
 build/
+# 会话历史（含代码路径/任务内容，严禁入库）
+session/
 .idea/
